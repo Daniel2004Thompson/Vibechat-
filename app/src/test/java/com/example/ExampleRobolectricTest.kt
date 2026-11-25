@@ -250,6 +250,12 @@ class ExampleRobolectricTest {
         assertTrue(description.contains("VibeChat"))
         assertTrue(!description.contains("Codester", ignoreCase = true))
         assertTrue(chooserIntent.getBooleanExtra("alwaysPromptForAccount", false))
+
+        val googlePickerIntent = com.example.util.GoogleAuthManager.createGoogleAccountPickerIntent(context)
+        val pickerDesc = googlePickerIntent.getStringExtra("descriptionTextOverride").orEmpty()
+        assertTrue(pickerDesc.contains("VibeChat"))
+        assertTrue(!pickerDesc.contains("Codester", ignoreCase = true))
+        assertTrue(googlePickerIntent.getBooleanExtra("alwaysPromptForAccount", false))
     }
 }
 

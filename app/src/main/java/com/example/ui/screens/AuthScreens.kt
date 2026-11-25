@@ -161,7 +161,7 @@ fun AuthFlowScreen(
             onFallbackToChooser = {
                 try {
                     accountChooserLauncher.launch(
-                        GoogleAuthManager.createAccountChooserIntent(context)
+                        GoogleAuthManager.createGoogleAccountPickerIntent(context)
                     )
                 } catch (_: Exception) {
                     showGoogleChooserSheet = true
@@ -1992,7 +1992,7 @@ fun AuthFlowScreen(
                                 showGoogleChooserSheet = false
                                 try {
                                     accountChooserLauncher.launch(
-                                        GoogleAuthManager.createAccountChooserIntent(context)
+                                        GoogleAuthManager.createGoogleAccountPickerIntent(context)
                                     )
                                 } catch (_: Exception) {
                                     onShowMessage("No system account picker available. Enter your email below.")

@@ -15,6 +15,9 @@ import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.GetCredentialCancellationException
 import androidx.credentials.exceptions.NoCredentialException
 import com.example.data.remote.SupabaseClientManager
+import com.google.android.gms.common.AccountPicker
+import com.google.android.gms.common.ConnectionResult
+import com.google.android.gms.common.GoogleApiAvailability
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential.Companion.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL
@@ -133,6 +136,31 @@ object GoogleAuthManager {
         }
         intent.putExtra("alwaysPromptForAccount", true)
         return intent
+    }
+
+    /**
+     * Builds the Google Play Services account-chip styled Google account chooser Intent
+     * (shows circular profile photos, full names, and Gmail/Workspace addresses on the device,
+     * rather than the bare AOSP radio-button list). Falls back to system chooser if GMS is absent.
+     */
+    fun createGoogleAccountPickerIntent(context: Context): Intent {
+        try {
+            val gmsStatus = GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(context)
+            if (gmsStatus == ConnectionResult.SUCCESS) {
+                val options = AccountPicker.AccountChooserOptions.Builder()
+                    .setAllowableAccountsTypes(listOf("com.google"))
+                    .setAlwaysShowAccountPicker(true)
+                    .setTitleOverrideText("to continue to VibeChat")
+                    .build()
+                val gmsIntent = AccountPicker.newChooseAccountIntent(options)
+                if (gmsIntent.resolveActivity(context.packageManager) != null) {
+                    return gmsIntent
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "GMS AccountPicker unavailable, falling back to system chooser: ${e.message}")
+        }
+        return createAccountChooserIntent(context)
     }
 
     /**
