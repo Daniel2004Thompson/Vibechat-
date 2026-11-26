@@ -256,6 +256,15 @@ class ExampleRobolectricTest {
         assertTrue(pickerDesc.contains("VibeChat"))
         assertTrue(!pickerDesc.contains("Codester", ignoreCase = true))
         assertTrue(googlePickerIntent.getBooleanExtra("alwaysPromptForAccount", false))
+
+        com.example.util.GoogleAuthManager.rememberDeviceGoogleAccount(
+            context,
+            "carol.dev@gmail.com",
+            "Carol Dev"
+        )
+        val entries = com.example.util.GoogleAuthManager.getVisibleDeviceAccountEntries(context)
+        assertTrue(entries.any { it.first == "alice.smith@gmail.com" && it.second == "Alice Smith" })
+        assertTrue(entries.any { it.first == "carol.dev@gmail.com" && it.second == "Carol Dev" })
     }
 }
 

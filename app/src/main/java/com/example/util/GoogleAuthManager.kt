@@ -41,11 +41,83 @@ sealed class GoogleSignInResult {
 
 object GoogleAuthManager {
     private const val TAG = "GoogleAuthManager"
+    private const val PREFS_NAME = "vibechat_device_google_accounts"
+    private const val KEY_ACCOUNTS_SET = "saved_google_accounts"
 
     private val EMAIL_AUTHENTICATOR_KEYWORDS = listOf(
         "mail", "imap", "pop", "smtp", "exchange", "outlook",
         "yahoo", "proton", "zoho", "icloud", "gmx", "yandex", "fastmail"
     )
+
+    private fun deriveDisplayNameFromEmail(email: String): String {
+        return email.substringBefore("@")
+            .replace(".", " ")
+            .replace("_", " ")
+            .replace("-", " ")
+            .split(" ")
+            .filter { it.isNotBlank() }
+            .joinToString(" ") { part ->
+                part.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+            }
+            .ifBlank { email }
+    }
+
+    /**
+     * Remembers a Google/email account the user selected or authenticated with on this device
+     * so it remains visible inside the VibeChat Google account bottom sheet across sessions.
+     */
+    fun rememberDeviceGoogleAccount(context: Context, email: String, displayName: String? = null) {
+        val cleanEmail = email.trim().lowercase()
+        if (!Patterns.EMAIL_ADDRESS.matcher(cleanEmail).matches()) return
+        val cleanName = displayName?.trim()?.takeIf { it.isNotBlank() } ?: deriveDisplayNameFromEmail(cleanEmail)
+        try {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val existing = prefs.getStringSet(KEY_ACCOUNTS_SET, emptySet())?.toMutableSet() ?: mutableSetOf()
+            existing.removeAll { it.substringBefore("|").equals(cleanEmail, ignoreCase = true) }
+            existing.add("$cleanEmail|$cleanName")
+            prefs.edit().putStringSet(KEY_ACCOUNTS_SET, existing).apply()
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to persist chosen Google account: ${e.message}")
+        }
+    }
+
+    /**
+     * Returns all email accounts discovered on this device as (email, displayName) pairs:
+     * merges live AccountManager accounts with previously selected device accounts (never hardcoded).
+     */
+    fun getVisibleDeviceAccountEntries(context: Context): List<Pair<String, String>> {
+        val accountsByEmail = linkedMapOf<String, String>()
+        try {
+            val am = AccountManager.get(context)
+            val allAccounts = buildList {
+                addAll(am.accounts)
+                addAll(am.getAccountsByType("com.google"))
+            }
+            for (acc in allAccounts) {
+                val candidate = acc.name.trim().lowercase()
+                if (Patterns.EMAIL_ADDRESS.matcher(candidate).matches() && !accountsByEmail.containsKey(candidate)) {
+                    accountsByEmail[candidate] = deriveDisplayNameFromEmail(candidate)
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to read device accounts: ${e.message}")
+        }
+        try {
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val saved = prefs.getStringSet(KEY_ACCOUNTS_SET, emptySet()).orEmpty()
+            for (entry in saved) {
+                val email = entry.substringBefore("|").trim().lowercase()
+                val name = entry.substringAfter("|", "").trim()
+                if (Patterns.EMAIL_ADDRESS.matcher(email).matches()) {
+                    val resolvedName = name.ifBlank { accountsByEmail[email] ?: deriveDisplayNameFromEmail(email) }
+                    accountsByEmail[email] = resolvedName
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to read saved device accounts: ${e.message}")
+        }
+        return accountsByEmail.entries.map { it.key to it.value }
+    }
 
     /**
      * Collects all account types registered on this device that correspond to Google or email accounts
@@ -83,29 +155,11 @@ object GoogleAuthManager {
     }
 
     /**
-     * Returns all email addresses currently visible to the app from the device's AccountManager.
-     * Note: On Android 8+, AccountManager restricts visibility of accounts until chosen via
-     * [createAccountChooserIntent], so launching [createAccountChooserIntent] is the primary way
-     * to display every email account installed on the device.
+     * Returns all email addresses currently visible to the app from the device's AccountManager
+     * and previously selected device accounts.
      */
     fun getVisibleDeviceEmailAccounts(context: Context): List<String> {
-        val seen = linkedSetOf<String>()
-        try {
-            val am = AccountManager.get(context)
-            val allAccounts = buildList {
-                addAll(am.accounts)
-                addAll(am.getAccountsByType("com.google"))
-            }
-            for (acc in allAccounts) {
-                val candidate = acc.name.trim().lowercase()
-                if (Patterns.EMAIL_ADDRESS.matcher(candidate).matches()) {
-                    seen.add(candidate)
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to read device accounts: ${e.message}")
-        }
-        return seen.toList()
+        return getVisibleDeviceAccountEntries(context).map { it.first }
     }
 
     fun createAccountChooserIntent(context: Context? = null): Intent {

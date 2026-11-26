@@ -50,6 +50,12 @@ jobs:
         with:
           gradle-version: '9.3.1'
 
+      - name: Read app version
+        id: app_version
+        run: |
+          VERSION=$(grep -E 'versionName\s*=' app/build.gradle.kts | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "version=${VERSION:-5.0.0}" >> "$GITHUB_OUTPUT"
+
       - name: Build Debug APK
         run: |
           if [ -f ./gradlew ]; then
@@ -58,10 +64,13 @@ jobs:
           else
             gradle :app:assembleDebug --no-daemon
           fi
+          mkdir -p dist-apk
+          APK_SOURCE=$(find app/build/outputs/apk/debug -maxdepth 1 -name '*.apk' | head -n 1)
+          cp "$APK_SOURCE" "dist-apk/VibeChat-v${{ steps.app_version.outputs.version }}-debug.apk"
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: vibechat-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          name: vibechat-v${{ steps.app_version.outputs.version }}-debug-apk
+          path: dist-apk/*.apk
           if-no-files-found: error

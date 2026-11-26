@@ -97,13 +97,16 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
 import com.example.util.GoogleAuthManager
 import com.example.util.GoogleSignInResult
+import android.Manifest
 import android.accounts.AccountManager
 import android.app.Activity
+import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.PersonAdd
+import androidx.core.content.ContextCompat
 
 private data class GoogleAccountItem(
     val name: String,
@@ -138,6 +141,15 @@ fun AuthFlowScreen(
     val coroutineScope = rememberCoroutineScope()
 
     var showGoogleChooserSheet by rememberSaveable { mutableStateOf(false) }
+    var hasRequestedAccountsPermission by rememberSaveable { mutableStateOf(false) }
+    var accountRefreshTrigger by remember { mutableStateOf(0) }
+
+    val getAccountsPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { _ ->
+        accountRefreshTrigger++
+        showGoogleChooserSheet = true
+    }
 
     val accountChooserLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -148,7 +160,15 @@ fun AuthFlowScreen(
                 val cleanEmail = selectedEmail.trim().lowercase()
                 val derivedName = cleanEmail.substringBefore("@")
                     .replace(".", " ")
-                    .replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+                    .replace("_", " ")
+                    .split(" ")
+                    .filter { it.isNotBlank() }
+                    .joinToString(" ") { part ->
+                        part.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+                    }
+                    .ifBlank { cleanEmail }
+                GoogleAuthManager.rememberDeviceGoogleAccount(context, cleanEmail, derivedName)
+                accountRefreshTrigger++
                 onSignInGoogle("", cleanEmail, derivedName, null)
             }
         }
@@ -159,17 +179,29 @@ fun AuthFlowScreen(
             context = context,
             scope = coroutineScope,
             onFallbackToChooser = {
-                try {
-                    accountChooserLauncher.launch(
-                        GoogleAuthManager.createGoogleAccountPickerIntent(context)
-                    )
-                } catch (_: Exception) {
+                val hasAccountsPerm = ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.GET_ACCOUNTS
+                ) == PackageManager.PERMISSION_GRANTED
+                val alreadyVisible = GoogleAuthManager.getVisibleDeviceEmailAccounts(context).isNotEmpty()
+                if (!hasAccountsPerm && !hasRequestedAccountsPermission && !alreadyVisible) {
+                    hasRequestedAccountsPermission = true
+                    try {
+                        getAccountsPermissionLauncher.launch(Manifest.permission.GET_ACCOUNTS)
+                    } catch (_: Exception) {
+                        accountRefreshTrigger++
+                        showGoogleChooserSheet = true
+                    }
+                } else {
+                    accountRefreshTrigger++
                     showGoogleChooserSheet = true
                 }
             }
         ) { result ->
             when (result) {
                 is GoogleSignInResult.Success -> {
+                    GoogleAuthManager.rememberDeviceGoogleAccount(context, result.email, result.displayName)
+                    accountRefreshTrigger++
                     onSignInGoogle(
                         result.idToken,
                         result.email,
@@ -1798,7 +1830,7 @@ fun AuthFlowScreen(
         var showCustomInput by remember { mutableStateOf(false) }
 
         // Dynamically read all email addresses registered & visible on this device (never hardcoded)
-        val allDeviceAccounts = remember(context) {
+        val allDeviceAccounts = remember(context, accountRefreshTrigger, showGoogleChooserSheet) {
             val palette = listOf(
                 Color(0xFF1E88E5),
                 Color(0xFF00897B),
@@ -1806,20 +1838,11 @@ fun AuthFlowScreen(
                 Color(0xFF6366F1),
                 Color(0xFFEC4899)
             )
-            GoogleAuthManager.getVisibleDeviceEmailAccounts(context).mapIndexed { idx, accEmail ->
-                val derivedName = accEmail.substringBefore("@")
-                    .replace(".", " ")
-                    .replace("_", " ")
-                    .split(" ")
-                    .filter { it.isNotBlank() }
-                    .joinToString(" ") { part ->
-                        part.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
-                    }
-                    .ifBlank { accEmail }
+            GoogleAuthManager.getVisibleDeviceAccountEntries(context).mapIndexed { idx, (accEmail, accName) ->
                 GoogleAccountItem(
-                    name = derivedName,
+                    name = accName,
                     email = accEmail,
-                    initial = derivedName.firstOrNull()?.uppercase() ?: "G",
+                    initial = accName.firstOrNull()?.uppercase() ?: "G",
                     avatarColor = palette[idx % palette.size]
                 )
             }
@@ -1832,7 +1855,11 @@ fun AuthFlowScreen(
             shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
             dragHandle = null
         ) {
-            Box(modifier = Modifier.fillMaxWidth()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("google_chooser_sheet")
+            ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1933,6 +1960,11 @@ fun AuthFlowScreen(
                                 .fillMaxWidth()
                                 .clickable {
                                     showGoogleChooserSheet = false
+                                    GoogleAuthManager.rememberDeviceGoogleAccount(
+                                        context,
+                                        account.email,
+                                        account.name
+                                    )
                                     onSignInGoogle(
                                         "",
                                         account.email,
@@ -1984,59 +2016,62 @@ fun AuthFlowScreen(
                         )
                     }
 
-                    // Browse system device email accounts
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                showGoogleChooserSheet = false
-                                try {
-                                    accountChooserLauncher.launch(
-                                        GoogleAuthManager.createGoogleAccountPickerIntent(context)
-                                    )
-                                } catch (_: Exception) {
-                                    onShowMessage("No system account picker available. Enter your email below.")
-                                }
-                            }
-                            .padding(vertical = 14.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(
+                    // Only surface system account picker fallback row directly if no device emails are visible yet
+                    if (allDeviceAccounts.isEmpty()) {
+                        Row(
                             modifier = Modifier
-                                .size(42.dp)
-                                .clip(CircleShape)
-                                .background(Color(0xFF282A2D)),
-                            contentAlignment = Alignment.Center
+                                .fillMaxWidth()
+                                .clickable {
+                                    showGoogleChooserSheet = false
+                                    try {
+                                        accountChooserLauncher.launch(
+                                            GoogleAuthManager.createGoogleAccountPickerIntent(context)
+                                        )
+                                    } catch (_: Exception) {
+                                        onShowMessage("No system account picker available. Enter your email below.")
+                                    }
+                                }
+                                .padding(vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Email,
-                                contentDescription = "Choose from device emails",
-                                tint = VibeEmerald,
-                                modifier = Modifier.size(20.dp)
+                            Box(
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF282A2D)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Email,
+                                    contentDescription = "Choose from device accounts",
+                                    tint = VibeEmerald,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.width(16.dp))
+
+                            Text(
+                                text = "Choose from device accounts",
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.Medium,
+                                color = Color(0xFFE8EAED),
+                                fontSize = 15.sp
                             )
                         }
 
-                        Spacer(modifier = Modifier.width(16.dp))
-
-                        Text(
-                            text = "Choose from device accounts",
-                            style = MaterialTheme.typography.bodyLarge,
-                            fontWeight = FontWeight.Medium,
-                            color = Color(0xFFE8EAED),
-                            fontSize = 15.sp
+                        HorizontalDivider(
+                            color = Color(0xFF3C4043).copy(alpha = 0.5f),
+                            thickness = 0.6.dp
                         )
                     }
 
-                    HorizontalDivider(
-                        color = Color(0xFF3C4043).copy(alpha = 0.5f),
-                        thickness = 0.6.dp
-                    )
-
-                    // "Use another account" row
+                    // "Use another account" row matching Picture 1 structure
                     if (!showCustomInput) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .testTag("google_use_another_account")
                                 .clickable { showCustomInput = true }
                                 .padding(vertical = 16.dp),
                             verticalAlignment = Alignment.CenterVertically
@@ -2091,27 +2126,52 @@ fun AuthFlowScreen(
                             )
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.End
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                TextButton(onClick = { showCustomInput = false }) {
-                                    Text("Cancel", color = Color(0xFF9AA0A6))
-                                }
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Button(
+                                TextButton(
                                     onClick = {
-                                        if (customAccountEmail.isNotBlank()) {
-                                            showGoogleChooserSheet = false
-                                            val clean = customAccountEmail.trim().lowercase()
-                                            val name = clean.substringBefore("@")
-                                                .replace(".", " ")
-                                                .replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
-                                            onSignInGoogle("", clean, name, null)
+                                        showGoogleChooserSheet = false
+                                        try {
+                                            accountChooserLauncher.launch(
+                                                GoogleAuthManager.createGoogleAccountPickerIntent(context)
+                                            )
+                                        } catch (_: Exception) {
+                                            onShowMessage("No system account picker available.")
                                         }
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFA8C7FA)),
-                                    shape = RoundedCornerShape(20.dp)
+                                    }
                                 ) {
-                                    Text("Next", color = Color(0xFF040E1B), fontWeight = FontWeight.SemiBold)
+                                    Text("Device accounts", color = VibeEmerald)
+                                }
+                                Row {
+                                    TextButton(onClick = { showCustomInput = false }) {
+                                        Text("Cancel", color = Color(0xFF9AA0A6))
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Button(
+                                        onClick = {
+                                            if (customAccountEmail.isNotBlank()) {
+                                                showGoogleChooserSheet = false
+                                                val clean = customAccountEmail.trim().lowercase()
+                                                val name = clean.substringBefore("@")
+                                                    .replace(".", " ")
+                                                    .replace("_", " ")
+                                                    .split(" ")
+                                                    .filter { it.isNotBlank() }
+                                                    .joinToString(" ") { part ->
+                                                        part.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+                                                    }
+                                                    .ifBlank { clean }
+                                                GoogleAuthManager.rememberDeviceGoogleAccount(context, clean, name)
+                                                accountRefreshTrigger++
+                                                onSignInGoogle("", clean, name, null)
+                                            }
+                                        },
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFA8C7FA)),
+                                        shape = RoundedCornerShape(20.dp)
+                                    ) {
+                                        Text("Next", color = Color(0xFF040E1B), fontWeight = FontWeight.SemiBold)
+                                    }
                                 }
                             }
                         }
